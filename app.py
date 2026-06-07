@@ -14,8 +14,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+from streamlit_autorefresh import st_autorefresh
 
-from config import AVAILABLE_ETFS, PREDICTION_DAYS
+from config import AVAILABLE_ETFS, PREDICTION_DAYS, REFRESH_INTERVAL_SECONDS
 from src.data_loader import download_etf_data, update_etf_data, load_etf_data
 from src.features import add_features, prepare_training_data
 from src.model import ProphetModel, XGBoostModel
@@ -43,6 +44,39 @@ st.markdown("""
     .stApp { background-color: #0e1117; }
 </style>
 """, unsafe_allow_html=True)
+
+# --- Auto-refresh during market hours (every 5 min) ---
+# TSX market hours: 9:30 AM - 4:00 PM ET, Mon-Fri
+import pytz
+now_et = datetime.now(pytz.timezone("America/Toronto"))
+is_market_hours = (
+    now_et.weekday() < 5
+    and now_et.hour >= 9 and now_et.hour < 16
+    and not (now_et.hour == 9 and now_et.minute < 30)
+)
+
+if is_market_hours:
+    st_autorefresh(
+        interval=REFRESH_INTERVAL_SECONDS * 1000,
+        key="live_refresh",
+    )
+
+
+def get_live_price(ticker: str) -> dict:
+    """Fetch the latest delayed price from Yahoo Finance."""
+    import yfinance as yf
+    try:
+        etf = yf.Ticker(ticker)
+        info = etf.fast_info
+        return {
+            "price": info.last_price,
+            "prev_close": info.previous_close,
+            "open": info.open,
+            "day_high": info.day_high,
+            "day_low": info.day_low,
+        }
+    except Exception:
+        return None
 
 
 # --- Session State Init ---
@@ -207,19 +241,32 @@ for ticker in selected:
     # --- Metrics row ---
     col1, col2, col3, col4 = st.columns(4)
 
-    current_price = df["Close"].iloc[-1]
-    prev_close = df["Close"].iloc[-2]
+    # Use live price during market hours, historical close otherwise
+    live = get_live_price(ticker) if is_market_hours else None
+
+    if live and live["price"]:
+        current_price = live["price"]
+        prev_close = live["prev_close"]
+        day_high = live["day_high"]
+        day_low = live["day_low"]
+        col1.metric("Live Price 🟢", f"${current_price:.2f}")
+    else:
+        current_price = df["Close"].iloc[-1]
+        prev_close = df["Close"].iloc[-2]
+        day_high = df["High"].iloc[-1]
+        day_low = df["Low"].iloc[-1]
+        col1.metric("Last Close", f"${current_price:.2f}")
+
     day_change = current_price - prev_close
     day_change_pct = (day_change / prev_close) * 100
 
-    col1.metric("Current Price", f"${current_price:.2f}")
     col2.metric(
         "Day Change",
         f"${day_change:.2f}",
         f"{day_change_pct:+.2f}%",
     )
-    col3.metric("Day High", f"${df['High'].iloc[-1]:.2f}")
-    col4.metric("Day Low", f"${df['Low'].iloc[-1]:.2f}")
+    col3.metric("Day High", f"${day_high:.2f}")
+    col4.metric("Day Low", f"${day_low:.2f}")
 
     # Prediction metrics
     if preds is not None:
@@ -266,7 +313,9 @@ for ticker in selected:
 
 # --- Footer ---
 st.sidebar.divider()
+market_status = "🟢 Market Open — auto-refreshing" if is_market_hours else "🔴 Market Closed"
 st.sidebar.caption(
-    f"Last loaded: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-    "⚠️ Predictions are for learning purposes only. Not financial advice."
+    f"{market_status}\n\n"
+    f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    "⚠️ Prices delayed ~15 min. Predictions are for learning purposes only."
 )
