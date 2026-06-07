@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+data/raw/*.parquet
+models/saved/*.pkl
+models/saved/*.json
+.streamlit/secrets.toml
+.env
+*.egg-info/
+dist/
+build/
